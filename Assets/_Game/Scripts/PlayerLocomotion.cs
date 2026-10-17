@@ -9,14 +9,17 @@ public class PlayerLocomotion : MonoBehaviour
     [SerializeField] private Camera playerCamera;
 
     [Header("Movement")]
-    [SerializeField, Min(0f)] private float movementSpeed = 5f;
+    [SerializeField] private float movementSpeed = 5f;
 
     [Header("Rotation")]
-    [SerializeField, Min(0f)] private float rotationSpeed = 15f;
+    [SerializeField] private float rotationSpeed = 15f;
 
     [Header("Mouse Raycast")]
     [SerializeField] private float groundHeightOffset = 0f;
-    [SerializeField, Min(0f)] private float maxRayDistance = 1000f;
+    [SerializeField] private float maxRayDistance = 1000f;
+
+    public float MovementMultiplier { get; set; } = 1f;
+    public bool RotationLocked { get; set; }
 
     private CharacterController controller;
     private LD60_InputSystem input;
@@ -48,59 +51,45 @@ public class PlayerLocomotion : MonoBehaviour
     private void Update()
     {
         HandleMovement();
-        HandleRotation();
+
+        if (!RotationLocked)
+            HandleRotation();
     }
 
     private void HandleMovement()
     {
-        var movement = input.Player.Move.ReadValue<Vector2>();
+        Vector2 movement = input.Player.Move.ReadValue<Vector2>();
 
-        var direction = new Vector3(
-            movement.x,
-            0f,
-            movement.y
-        );
+        Vector3 direction = new Vector3(movement.x, 0f, movement.y);
 
         direction = Vector3.ClampMagnitude(direction, 1f);
 
-        controller.Move(direction * movementSpeed * Time.deltaTime);
+        controller.Move(direction * movementSpeed * MovementMultiplier * Time.deltaTime);
     }
 
     private void HandleRotation()
     {
-        if (playerCamera == null)
+        if (playerCamera == null || Mouse.current == null)
             return;
 
-        var mousePosition = Mouse.current.position.ReadValue();
-        var ray = playerCamera.ScreenPointToRay(mousePosition);
+        var ray = playerCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
 
-        var groundPlane = new Plane(
-            Vector3.up,
-            new Vector3(0f, transform.position.y + groundHeightOffset, 0f)
-        );
+        var ground = new Plane(Vector3.up, transform.position + Vector3.up * groundHeightOffset);
 
-        if (!groundPlane.Raycast(ray, out float distance))
+        if (!ground.Raycast(ray, out float distance))
             return;
 
         if (distance > maxRayDistance)
             return;
 
-        var targetPoint = ray.GetPoint(distance);
-        var direction = targetPoint - transform.position;
+        var direction = ray.GetPoint(distance) - transform.position;
         direction.y = 0f;
 
         if (direction.sqrMagnitude < 0.001f)
             return;
 
-        var targetRotation = Quaternion.LookRotation(
-            direction,
-            Vector3.up
-        );
+        var target = Quaternion.LookRotation(direction);
 
-        transform.rotation = Quaternion.Slerp(
-            transform.rotation,
-            targetRotation,
-            Mathf.Clamp01(rotationSpeed * Time.deltaTime)
-        );
+        transform.rotation = Quaternion.Slerp(transform.rotation, target, Mathf.Clamp01(rotationSpeed * Time.deltaTime));
     }
 }
