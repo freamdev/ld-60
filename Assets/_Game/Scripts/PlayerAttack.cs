@@ -1,5 +1,4 @@
 
-using System.Collections;
 using Unity.Cinemachine;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -9,7 +8,6 @@ public class PlayerAttack : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private PlayerLocomotion locomotion;
-    [SerializeField] private Camera playerCamera;
     [SerializeField] private Transform muzzlePoint;
     [SerializeField] private MuzzleFlashLight muzzleFlashLight;
 
@@ -24,49 +22,63 @@ public class PlayerAttack : MonoBehaviour
     [SerializeField, Min(0f)] private float projectileSpeed = 50f;
     [SerializeField, Min(0f)] private float projectileDamage = 50f;
 
-    [Header("Firing Sequence")]
-    [SerializeField, Range(0f, 1f)]
-    private float firingMovementMultiplier = 0.3f;
+    [Header("Accuracy")]
+    [SerializeField, Range(0f, 45f)] private float hipFireSpread = 15f;
 
-    [SerializeField, Min(0f)]
-    private float turnSpeed = 360f;
+    [Header("Aiming")]
+    [SerializeField, Range(0f, 1f)] private float aimingMovementMultiplier = 0.3f;
 
-    [SerializeField, Range(0f, 45f)]
-    private float firingAngleTolerance = 3f;
+    [SerializeField, Range(0f, 1f)] private float aimingRotationMultiplier = 0.35f;
 
-    [SerializeField, Min(0f)]
-    private float cameraTransitionTime = 0.25f;
-
-    [SerializeField, Min(0f)]
-    private float recoveryTime = 0.5f;
-
-    [SerializeField, Min(0f)]
-    private float cooldown = 0.5f;
+    [Header("Cooldown")]
+    [SerializeField, Min(0f)] private float cooldown = 2f;
+    [SerializeField, Min(0f)] private float hipCooldown = 2f;
 
     [Header("Aiming Line")]
     [SerializeField] private LineRenderer aimLine;
-    [SerializeField] private float groundHeightOffset = 0f;
     [SerializeField, Min(0f)] private float maxAimDistance = 100f;
 
     [Header("Effects")]
     [SerializeField] private ParticleSystem muzzleFlash;
     [SerializeField] private AudioSource gunshotAudio;
     [SerializeField] private CinemachineImpulseSource cameraImpulse;
+    [SerializeField] private AudioSource reloadAudioSource;
+    [SerializeField] private AudioClip reloadCompleteClip;
 
     [Header("Weapon Recoil")]
     [SerializeField] private Transform weaponVisual;
     [SerializeField, Min(0f)] private float recoilDistance = 0.15f;
     [SerializeField, Min(0f)] private float recoilRecoverySpeed = 12f;
 
+    [Header("Reload UI")]
+    [SerializeField] private CanvasGroup reloadCanvasGroup;
+    [SerializeField] private RectTransform reloadTextTransform;
+    [SerializeField, Min(0f)] private float reloadFadeSpeed = 4f;
+    [SerializeField, Min(0f)] private float reloadPopSpeed = 12f;
+    [SerializeField] private float reloadPopScale = 1.3f;
+
+    [Header("Reload Text Fill")]
+    [SerializeField] private RectTransform reloadFillArea;
+    [SerializeField] private TMPro.TextMeshProUGUI reloadColoredText;
+    [SerializeField] private Color reloadFillColor = Color.red;
+
+    private float reloadStartTime;
+    private float reloadDuration;
+    private float reloadFullWidth;
+
+    public bool GameEnded { get; set; }
+
+    private float reloadScale = 1f;
+
     private LD60_InputSystem input;
 
-    private bool isFiring;
     private bool isAiming;
     private float nextFireTime;
 
-    private Vector3 lockedDirection;
     private Vector3 weaponRestPosition;
     private float currentRecoil;
+
+    private bool reloadSoundPending;
 
     private void Awake()
     {
@@ -74,9 +86,6 @@ public class PlayerAttack : MonoBehaviour
 
         if (locomotion == null)
             locomotion = GetComponent<PlayerLocomotion>();
-
-        if (playerCamera == null)
-            playerCamera = Camera.main;
 
         if (weaponVisual != null)
             weaponRestPosition = weaponVisual.localPosition;
@@ -87,16 +96,27 @@ public class PlayerAttack : MonoBehaviour
             aimLine.useWorldSpace = true;
             aimLine.enabled = false;
         }
+
+        if (reloadFillArea != null)
+        {
+            reloadFullWidth = reloadFillArea.rect.width;
+            reloadFillArea.SetSizeWithCurrentAnchors(
+                RectTransform.Axis.Horizontal, 0f);
+        }
+
+        if (reloadColoredText != null)
+            reloadColoredText.color = reloadFillColor;
     }
 
     private void OnEnable()
     {
-        input.Player.Enable();
         input.Player.Attack.performed += OnAttack;
         input.Player.Aim.performed += OnAimStarted;
         input.Player.Aim.canceled += OnAimStopped;
 
-        SetShoulderCamera(false);
+        input.Player.Enable();
+
+        SetAiming(false);
     }
 
     private void OnDisable()
@@ -107,15 +127,7 @@ public class PlayerAttack : MonoBehaviour
 
         input.Player.Disable();
 
-        StopAllCoroutines();
-        isAiming = false;
-        isFiring = false;
-
-        if (locomotion != null)
-        {
-            locomotion.RotationLocked = false;
-            locomotion.MovementMultiplier = 1f;
-        }
+        SetAiming(false);
 
         if (aimLine != null)
             aimLine.enabled = false;
@@ -124,7 +136,6 @@ public class PlayerAttack : MonoBehaviour
             weaponVisual.localPosition = weaponRestPosition;
 
         currentRecoil = 0f;
-        SetShoulderCamera(false);
     }
 
     private void OnDestroy()
@@ -134,95 +145,162 @@ public class PlayerAttack : MonoBehaviour
 
     private void Update()
     {
+        if (GameEnded)
+            return;
+
         UpdateAimLine();
         UpdateRecoil();
+        UpdateReloadUI();
+    }
+
+    private void UpdateReloadUI()
+    {
+        if (reloadSoundPending && Time.time >= nextFireTime - .7f)
+        {
+            reloadSoundPending = false;
+
+            if (reloadAudioSource != null && reloadCompleteClip != null)
+                reloadAudioSource.PlayOneShot(reloadCompleteClip);
+        }
+
+        if (reloadCanvasGroup == null)
+            return;
+
+        var progress = reloadDuration > 0f ? Mathf.Clamp01((Time.time - reloadStartTime) / reloadDuration) : 1f;
+
+        if (reloadFillArea != null)
+        {
+            reloadFillArea.SetSizeWithCurrentAnchors(
+                RectTransform.Axis.Horizontal,
+                reloadFullWidth * progress
+            );
+        }
+
+        var isReloading = Time.time < nextFireTime - 0.5f;
+
+        var targetAlpha = isReloading ? 1f : 0f;
+
+        reloadCanvasGroup.alpha = Mathf.MoveTowards(
+            reloadCanvasGroup.alpha,
+            targetAlpha,
+            reloadFadeSpeed * Time.deltaTime
+        );
+
+        if (reloadTextTransform != null)
+        {
+            reloadScale = Mathf.MoveTowards(
+                reloadScale,
+                1f,
+                reloadPopSpeed * Time.deltaTime
+            );
+
+            reloadTextTransform.localScale = Vector3.one * reloadScale;
+        }
     }
 
     private void OnAimStarted(InputAction.CallbackContext context)
     {
-        isAiming = true;
+        SetAiming(true);
     }
 
     private void OnAimStopped(InputAction.CallbackContext context)
     {
-        isAiming = false;
+        SetAiming(false);
+    }
+
+    private void SetAiming(bool aiming)
+    {
+        isAiming = aiming;
+
+        if (locomotion != null)
+        {
+            locomotion.MovementMultiplier = aiming
+                ? aimingMovementMultiplier
+                : 1f;
+
+            locomotion.RotationMultiplier = aiming
+                ? aimingRotationMultiplier
+                : 1f;
+        }
+
+        SetShoulderCamera(aiming);
+
+        if (!aiming && aimLine != null)
+            aimLine.enabled = false;
     }
 
     private void OnAttack(InputAction.CallbackContext context)
     {
-        if (!isAiming || isFiring || Time.time < nextFireTime)
+        if (GameEnded)
             return;
 
-        if (muzzlePoint == null || projectilePrefab == null)
+        if (Time.time < nextFireTime)
             return;
 
-        if (!TryGetAimPoint(out Vector3 aimPoint))
+        if (projectilePrefab == null || muzzlePoint == null)
             return;
-
-        lockedDirection = aimPoint - transform.position;
-        lockedDirection.y = 0f;
-
-        if (lockedDirection.sqrMagnitude < 0.001f)
-            return;
-
-        lockedDirection.Normalize();
-
-        StartCoroutine(FiringSequence());
-    }
-
-    private IEnumerator FiringSequence()
-    {
-        isFiring = true;
-
-        locomotion.RotationLocked = true;
-        locomotion.MovementMultiplier = firingMovementMultiplier;
-
-        if (aimLine != null)
-            aimLine.enabled = false;
-
-        SetShoulderCamera(true);
-
-        var targetRotation = Quaternion.LookRotation(lockedDirection);
-
-        var elapsed = 0f;
-
-        while (true)
-        {
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, turnSpeed * Time.deltaTime);
-
-            elapsed += Time.deltaTime;
-
-            float angle = Quaternion.Angle(transform.rotation, targetRotation);
-
-            if (angle <= firingAngleTolerance && elapsed >= cameraTransitionTime)
-                break;
-
-            yield return null;
-        }
 
         FireProjectile();
 
-        yield return new WaitForSeconds(recoveryTime);
+        if (isAiming)
+        {
+            nextFireTime = Time.time + cooldown;
+        }
+        else
+        {
+            nextFireTime = Time.time + hipCooldown;
+        }
 
-        SetShoulderCamera(false);
+        reloadStartTime = Time.time;
+        reloadDuration = isAiming ? cooldown : hipCooldown;
 
-        locomotion.RotationLocked = false;
-        locomotion.MovementMultiplier = 1f;
+        reloadSoundPending = true;
 
-        nextFireTime = Time.time + cooldown;
-        isFiring = false;
+        if (reloadFillArea != null)
+            reloadFillArea.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, 0f);
+
+        if (reloadCanvasGroup != null)
+            reloadCanvasGroup.alpha = 1f;
+
+        reloadScale = reloadPopScale;
+
+        if (reloadTextTransform != null)
+            reloadTextTransform.localScale = Vector3.one * reloadScale;
     }
 
     private void FireProjectile()
     {
         var direction = transform.forward;
+
+        if (!isAiming)
+        {
+            var angle = Random.Range(-hipFireSpread, hipFireSpread);
+
+            direction = Quaternion.AngleAxis(
+                angle,
+                Vector3.up
+            ) * direction;
+        }
+
         direction.y = 0f;
         direction.Normalize();
 
         var projectile = Instantiate(projectilePrefab, muzzlePoint.position, Quaternion.LookRotation(direction));
 
-        projectile.Initialize(direction, projectileSpeed, projectileDamage, transform);
+        projectile.Initialize(
+            direction,
+            projectileSpeed,
+            projectileDamage,
+            transform
+        );
 
+        PlayFireEffects();
+
+        GhostAI.ReportGunshot(muzzlePoint.position);
+    }
+
+    private void PlayFireEffects()
+    {
         if (muzzleFlash != null)
             muzzleFlash.Play();
 
@@ -232,8 +310,10 @@ public class PlayerAttack : MonoBehaviour
         if (cameraImpulse != null)
             cameraImpulse.GenerateImpulse();
 
+        if (muzzleFlashLight != null)
+            muzzleFlashLight.Flash();
+
         currentRecoil = recoilDistance;
-        muzzleFlashLight.Flash();
     }
 
     private void UpdateAimLine()
@@ -241,13 +321,7 @@ public class PlayerAttack : MonoBehaviour
         if (aimLine == null)
             return;
 
-        if (!isAiming || isFiring || muzzlePoint == null)
-        {
-            aimLine.enabled = false;
-            return;
-        }
-
-        if (!TryGetAimPoint(out Vector3 aimPoint))
+        if (!isAiming || muzzlePoint == null)
         {
             aimLine.enabled = false;
             return;
@@ -255,33 +329,15 @@ public class PlayerAttack : MonoBehaviour
 
         aimLine.enabled = true;
 
-        var direction = aimPoint - transform.position;
+        var direction = transform.forward;
         direction.y = 0f;
         direction.Normalize();
 
         aimLine.SetPosition(0, muzzlePoint.position);
-        aimLine.SetPosition(1, muzzlePoint.position + direction * maxAimDistance);
-    }
-
-    private bool TryGetAimPoint(out Vector3 point)
-    {
-        point = Vector3.zero;
-
-        if (playerCamera == null || Mouse.current == null)
-            return false;
-
-        var ray = playerCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
-
-        var ground = new Plane(Vector3.up, transform.position + Vector3.up * groundHeightOffset);
-
-        if (!ground.Raycast(ray, out float distance))
-            return false;
-
-        if (distance > maxAimDistance)
-            return false;
-
-        point = ray.GetPoint(distance);
-        return true;
+        aimLine.SetPosition(
+            1,
+            muzzlePoint.position + direction * maxAimDistance
+        );
     }
 
     private void UpdateRecoil()
@@ -289,17 +345,24 @@ public class PlayerAttack : MonoBehaviour
         if (weaponVisual == null)
             return;
 
-        currentRecoil = Mathf.MoveTowards(currentRecoil, 0f, recoilRecoverySpeed * Time.deltaTime);
+        currentRecoil = Mathf.MoveTowards(
+            currentRecoil,
+            0f,
+            recoilRecoverySpeed * Time.deltaTime
+        );
 
-        weaponVisual.localPosition = weaponRestPosition - Vector3.forward * currentRecoil;
+        weaponVisual.localPosition =
+            weaponRestPosition - Vector3.forward * currentRecoil;
     }
 
     private void SetShoulderCamera(bool active)
     {
         if (normalCamera != null)
-            normalCamera.Priority = active ? normalPriority : shoulderPriority;
+            normalCamera.Priority = normalPriority;
 
         if (shoulderCamera != null)
-            shoulderCamera.Priority = active ? shoulderPriority : normalPriority;
+            shoulderCamera.Priority = active
+                ? shoulderPriority
+                : normalPriority - 1;
     }
 }

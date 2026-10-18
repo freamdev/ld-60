@@ -1,4 +1,3 @@
-
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -12,20 +11,27 @@ public class PlayerLocomotion : MonoBehaviour
     [SerializeField] private float movementSpeed = 5f;
 
     [Header("Rotation")]
-    [SerializeField] private float rotationSpeed = 15f;
+    [SerializeField] private float mouseSensitivity = 0.15f;
 
     [Header("Mouse Raycast")]
     [SerializeField] private float groundHeightOffset = 0f;
     [SerializeField] private float maxRayDistance = 1000f;
 
     public float MovementMultiplier { get; set; } = 1f;
+    public float RotationMultiplier { get; set; } = 1f;
     public bool RotationLocked { get; set; }
+
+    public bool GameEnded { get; set; }
 
     private CharacterController controller;
     private LD60_InputSystem input;
 
+
     private void Awake()
     {
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
         controller = GetComponent<CharacterController>();
         input = new LD60_InputSystem();
 
@@ -50,6 +56,9 @@ public class PlayerLocomotion : MonoBehaviour
 
     private void Update()
     {
+        if (GameEnded)
+            return;
+
         HandleMovement();
 
         if (!RotationLocked)
@@ -58,10 +67,20 @@ public class PlayerLocomotion : MonoBehaviour
 
     private void HandleMovement()
     {
-        Vector2 movement = input.Player.Move.ReadValue<Vector2>();
+        var movement = input.Player.Move.ReadValue<Vector2>();
 
-        Vector3 direction = new Vector3(movement.x, 0f, movement.y);
+        if (playerCamera == null)
+            return;
 
+        var forward = playerCamera.transform.forward;
+        forward.y = 0f;
+        forward.Normalize();
+
+        var right = playerCamera.transform.right;
+        right.y = 0f;
+        right.Normalize();
+
+        var direction = forward * movement.y + right * movement.x;
         direction = Vector3.ClampMagnitude(direction, 1f);
 
         controller.Move(direction * movementSpeed * MovementMultiplier * Time.deltaTime);
@@ -69,27 +88,15 @@ public class PlayerLocomotion : MonoBehaviour
 
     private void HandleRotation()
     {
-        if (playerCamera == null || Mouse.current == null)
+        if (Mouse.current == null)
             return;
 
-        var ray = playerCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
+        var mouseDeltaX = Mouse.current.delta.ReadValue().x;
 
-        var ground = new Plane(Vector3.up, transform.position + Vector3.up * groundHeightOffset);
-
-        if (!ground.Raycast(ray, out float distance))
-            return;
-
-        if (distance > maxRayDistance)
-            return;
-
-        var direction = ray.GetPoint(distance) - transform.position;
-        direction.y = 0f;
-
-        if (direction.sqrMagnitude < 0.001f)
-            return;
-
-        var target = Quaternion.LookRotation(direction);
-
-        transform.rotation = Quaternion.Slerp(transform.rotation, target, Mathf.Clamp01(rotationSpeed * Time.deltaTime));
+        transform.Rotate(
+            Vector3.up,
+            mouseDeltaX * mouseSensitivity * RotationMultiplier,
+            Space.World
+        );
     }
 }

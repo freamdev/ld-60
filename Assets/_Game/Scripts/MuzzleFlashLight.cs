@@ -8,14 +8,9 @@ public class MuzzleFlashLight : MonoBehaviour
     [SerializeField] private float maxIntensity = 100f;
     [SerializeField] private float duration = 0.18f;
     [SerializeField] private ParticleSystem muzzleSmoke;
+    [SerializeField] private DarknessController darknessController;
 
-    [SerializeField]
-    private AnimationCurve intensityCurve = new AnimationCurve(
-            new Keyframe(0f, 1f),
-            new Keyframe(0.15f, 0.9f),
-            new Keyframe(0.4f, 0.25f),
-            new Keyframe(1f, 0f)
-        );
+    [SerializeField] private AnimationCurve intensityCurve = new AnimationCurve(new Keyframe(0f, 1f), new Keyframe(0.15f, 0.9f), new Keyframe(0.4f, 0.25f), new Keyframe(1f, 0f));
 
     private Coroutine activeFlash;
 
@@ -37,8 +32,9 @@ public class MuzzleFlashLight : MonoBehaviour
     {
         flashLight.enabled = true;
         muzzleSmoke.Play();
+        darknessController.SetVisibility(120);
 
-        float elapsed = 0f;
+        var elapsed = 0f;
 
         while (elapsed < duration)
         {
@@ -53,5 +49,6 @@ public class MuzzleFlashLight : MonoBehaviour
         flashLight.intensity = 0f;
         flashLight.enabled = false;
         activeFlash = null;
+        darknessController.ResetVisibility();
     }
 }

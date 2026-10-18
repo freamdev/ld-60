@@ -1,4 +1,3 @@
-
 using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody))]
@@ -36,21 +35,39 @@ public class MusketProjectile : MonoBehaviour
 
     private void OnCollisionEnter(Collision collision)
     {
+        var contact = collision.GetContact(0);
+
+        HandleImpact(
+            collision.collider,
+            contact.point,
+            contact.normal
+        );
+    }
+
+    private void OnTriggerEnter(Collider other)
+    {
+        var hitPoint = other.ClosestPoint(transform.position);
+
+        var hitNormal = -rb.linearVelocity.normalized;
+
+        HandleImpact(other, hitPoint, hitNormal);
+    }
+
+    private void HandleImpact(Collider other, Vector3 hitPoint, Vector3 hitNormal)
+    {
         if (hasHit)
             return;
 
         hasHit = true;
 
-        var damageable = collision.collider.GetComponentInParent<IDamageable>();
+        var damageable = other.GetComponentInParent<IDamageable>();
 
         if (damageable != null)
-            damageable.TakeDamage(damage);
+            damageable.TakeDamage(damage, rb.linearVelocity.normalized);
 
         if (impactPrefab != null)
         {
-            var contact = collision.GetContact(0);
-
-            var impact = Instantiate(impactPrefab, contact.point, Quaternion.LookRotation(contact.normal));
+            var impact = Instantiate(impactPrefab, hitPoint, Quaternion.LookRotation(hitNormal));
 
             Destroy(impact.gameObject, 3f);
         }
